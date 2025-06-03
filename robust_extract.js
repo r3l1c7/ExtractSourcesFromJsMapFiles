@@ -7,7 +7,7 @@ const { promisify } = require('util');
 
 const setImmediateP = promisify(setImmediate);
 
-const OUTDIR = path.join(__dirname, 'src-recovered');
+const OUTDIR = path.join(process.cwd(), 'src-recovered');
 const MAX_CONCURRENT_WRITES = 5; // Reduced for stability
 const BATCH_SIZE = 10; // Much smaller batches
 const MAX_FILE_SIZE = 1024 * 1024; // 1MB limit per file
@@ -98,7 +98,7 @@ async function writeFileWithTimeout(filepath, content) {
 }
 
 async function processMapFile(mapFile) {
-  const mapPath = path.join(__dirname, mapFile);
+  const mapPath = path.join(process.cwd(), mapFile);
   
   try {
     console.log(`📁 Processing ${mapFile}...`);
@@ -191,18 +191,80 @@ async function processMapFile(mapFile) {
   }
 }
 
+async function getMapFilesToProcess() {
+  // Read all files in current directory
+  const files = await fs.readdir(process.cwd());
+  
+  // Check for text files that might contain map file lists
+  const textFiles = files.filter(f => f.endsWith('.txt'));
+  
+  // Look for text files that actually contain .js.map references
+  let validMapListFile = null;
+  let mapFileList = [];
+  
+  for (const textFile of textFiles) {
+    try {
+      console.log(`🔍 Checking ${textFile} for map file references...`);
+      const textContent = await fs.readFile(path.join(process.cwd(), textFile), 'utf8');
+      const potentialMapFiles = textContent
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#')) // Remove empty lines and comments
+        .filter(line => line.endsWith('.js.map')); // Only keep .js.map files
+      
+      if (potentialMapFiles.length > 0) {
+        console.log(`📋 Found ${potentialMapFiles.length} map file references in ${textFile}`);
+        validMapListFile = textFile;
+        mapFileList = potentialMapFiles;
+        break; // Use the first valid file we find
+      }
+    } catch (error) {
+      console.warn(`⚠️  Could not read ${textFile}: ${error.message}`);
+    }
+  }
+  
+  if (validMapListFile) {
+    console.log(`📝 Using map file list from ${validMapListFile}`);
+    
+    // Verify files exist
+    const existingMapFiles = [];
+    for (const mapFile of mapFileList) {
+      try {
+        await fs.access(path.join(process.cwd(), mapFile));
+        existingMapFiles.push(mapFile);
+      } catch {
+        console.warn(`⚠️  File not found: ${mapFile}`);
+      }
+    }
+    
+    if (existingMapFiles.length > 0) {
+      return existingMapFiles;
+    } else {
+      console.log('🔄 No valid map files found in list, falling back to processing all .js.map files');
+    }
+  } else {
+    if (textFiles.length > 0) {
+      console.log(`🔍 Found ${textFiles.length} .txt file(s) but none contain .js.map references`);
+    }
+    console.log('🚀 Processing ALL .js.map files in directory');
+  }
+  
+  // Default: process all .js.map files
+  return files.filter(f => f.endsWith('.js.map'));
+}
+
 (async () => {
   try {
-    // Find all map files
-    const files = await fs.readdir(__dirname);
-    const mapFiles = files.filter(f => f.endsWith('.js.map'));
+    // Determine which map files to process
+    const mapFiles = await getMapFilesToProcess();
     
     if (mapFiles.length === 0) {
-      console.log('No .js.map files found in current directory');
+      console.log('❌ No .js.map files found to process');
       return;
     }
     
-    console.log(`Found ${mapFiles.length} map files to process`);
+    console.log(`🚀 Processing ${mapFiles.length} map files`);
+    console.log(`📂 Output directory: ${OUTDIR}`);
     
     // Process files one at a time
     for (let i = 0; i < mapFiles.length; i++) {
